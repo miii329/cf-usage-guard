@@ -1,0 +1,6 @@
+node_modules/
+.wrangler/
+.dev.vars
+.env*
+# Cloudflare のIDを書くのでコミットしない。見本は wrangler.example.jsonc
+wrangler.jsonc

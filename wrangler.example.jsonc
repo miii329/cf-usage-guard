@@ -1,0 +1,20 @@
+// 見張り役 Worker の設定の見本。
+// これを wrangler.jsonc という名前でコピーし、「ここに〜」の部分を書き換えて使う。
+// wrangler.jsonc は .gitignore で除外しているので、IDはコミットされない
+{
+  "name": "cf-usage-guard",
+  "main": "src/index.ts",
+  "compatibility_date": "2026-11-01",
+  // 30分ごとに使用量を確かめる
+  "triggers": { "crons": ["*/30 * * * *"] },
+  "kv_namespaces": [
+    // ダッシュボードの「Workers KV」に出る Namespace ID
+    { "binding": "QUOTA", "id": "ここにNamespace ID" },
+  ],
+  "vars": {
+    // ダッシュボードの右側（またはURL）に出るアカウントID
+    "ACCOUNT_ID": "ここにアカウントID",
+  },
+  // シークレット（CF_API_TOKEN・SLACK_WEBHOOK_URL）はここに書かず、
+  // pnpm wrangler secret put で登録する
+}

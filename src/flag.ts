@@ -67,3 +67,81 @@ export async function isUploadAllowed(
 ): Promise<UploadCheck> {
   return checkState(parseState(await kv.get(guardKey)), now);
 }
+
+// 止めたときに投げるエラー。message はそのまま利用者に見せてよい文
+export class UploadBlockedError extends Error {
+  override name = "UploadBlockedError";
+}
+
+// 止めたことを知らせる先（Slack など）。同じ理由は1つの isolate で1時間に1回だけ知らせる
+export const announceEveryMs = 60 * 60 * 1000;
+const lastAnnounced = new Map<string, number>();
+
+export type GuardOptions = {
+  // 止めたときに知らせる。slack.ts の slackNotifier をそのまま渡せる
+  announce?: (text: string) => Promise<void> | void;
+  // 知らせる文に入れるプロジェクト名
+  project?: string;
+  // ctx.waitUntil を渡すと、知らせ終わるのを待たずにエラーを返す
+  waitUntil?: (promise: Promise<unknown>) => void;
+  now?: () => Date;
+};
+
+// 書き込み系の操作（Class A のうちアップロードにあたるもの）
+const guardedMethods = new Set(["put", "createMultipartUpload"]);
+
+// R2 のバケットを包み、put・createMultipartUpload の前に毎回 KV の印を見る。
+// 止めるときは R2 に送らずに UploadBlockedError を投げ、announce で知らせる。
+// 読み込みや削除はそのまま通す
+export function guardBucket<B extends object>(
+  bucket: B,
+  kv: GuardReader,
+  options: GuardOptions = {},
+): B {
+  return new Proxy(bucket, {
+    get(target, prop, receiver) {
+      const value = Reflect.get(target, prop, receiver);
+      if (typeof value !== "function") return value;
+      if (typeof prop !== "string" || !guardedMethods.has(prop)) {
+        return value.bind(target);
+      }
+      return async (...args: unknown[]) => {
+        const now = options.now?.() ?? new Date();
+        const check = await isUploadAllowed(kv, now);
+        if (!check.ok) {
+          const sending = announceBlocked(check.reason, options, now);
+          // waitUntil がなければ、知らせ終わってから返す（途中で打ち切られないように）
+          if (options.waitUntil) options.waitUntil(sending);
+          else await sending;
+          throw new UploadBlockedError(check.reason);
+        }
+        return value.apply(target, args);
+      };
+    },
+  });
+}
+
+async function announceBlocked(
+  reason: string,
+  options: GuardOptions,
+  now: Date,
+): Promise<void> {
+  if (!options.announce) return;
+  const key = `${options.project ?? ""}\n${reason}`;
+  const last = lastAnnounced.get(key);
+  if (last !== undefined && now.getTime() - last < announceEveryMs) return;
+  lastAnnounced.set(key, now.getTime());
+
+  const where = options.project ? `［${options.project}］` : "";
+  const text = `🚫 ${where}R2へのアップロードを止めました\n${reason}`;
+  try {
+    await options.announce(text);
+  } catch (error) {
+    console.error("止めたことを知らせられませんでした", error);
+  }
+}
+
+// テスト用：知らせた記録を消す
+export function resetAnnounced() {
+  lastAnnounced.clear();
+}

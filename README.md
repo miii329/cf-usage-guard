@@ -17,16 +17,32 @@ Cloudflare の使用量の見張り役です。いまは R2 を見ています�
 
 ## アップロードする側での使い方
 
-1. `src/flag.ts` を、アップロードを受け付けるプロジェクトにコピーします（`src/usage.ts` の `Usage` 型も使うので、型だけ一緒にコピーするか置き換えます）。
-2. そのプロジェクトの Worker に、同じ KV をつなぎます（`kv_namespaces` に同じ Namespace ID）。
-3. アップロードを受け付ける前に確かめます。
+1. `src/flag.ts` と `src/slack.ts` を、アップロードを受け付けるプロジェクトにコピーします（`src/usage.ts` の `Usage` 型も使うので、型だけ一緒にコピーするか置き換えます）。
+2. そのプロジェクトの Worker に、同じ KV をつなぎます（`kv_namespaces` に同じ Namespace ID）。Slack に知らせたいときは `SLACK_WEBHOOK_URL` も登録します。
+3. R2 のバケットを `guardBucket` で包み、あとは包んだほうを使います。
 
 ```ts
-const check = await isUploadAllowed(env.QUOTA);
-if (!check.ok) return new Response(check.reason, { status: 503 });
+const bucket = guardBucket(env.BUCKET, env.QUOTA, {
+  project: "KnowMe",
+  announce: slackNotifier(env.SLACK_WEBHOOK_URL),
+  waitUntil: (p) => ctx.waitUntil(p),
+});
+
+try {
+  await bucket.put(key, body);
+} catch (error) {
+  if (error instanceof UploadBlockedError) {
+    return new Response(error.message, { status: 503 });
+  }
+  throw error;
+}
 ```
 
-状態がない・古い・壊れているときは、止める側に倒します。
+- `put`・`createMultipartUpload` の前に、毎回自動で KV の印を見ます。止めるときは R2 に送らずに `UploadBlockedError` を投げます。`message` はそのまま利用者に見せられる文です。
+- 止めたときは `announce` で「🚫 ［KnowMe］R2へのアップロードを止めました」と理由を知らせます。同じ理由は1時間に1回までです（isolate ごと）。
+- 読み込みや削除は止めません。
+- 状態がない・古い（3時間以上）・壊れているときも、止める側に倒します。
+- 包まずに確かめたいときは `isUploadAllowed(env.QUOTA)` も使えます。
 
 ## セットアップ
 
@@ -53,4 +69,5 @@ pnpm test
 pnpm typecheck
 pnpm format
 ```
+
 # cf-usage-guard
